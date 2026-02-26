@@ -52,7 +52,7 @@ class IconSearcher:
     async def search_icons(
         self,
         q: str = "",
-        sort_type: str = "updated_at",
+        sort_type: str = "recommend",
         page: int = 1,
         page_size: int = 100,
         s_type: str = "",

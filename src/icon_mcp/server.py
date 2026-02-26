@@ -71,8 +71,8 @@ class MCPIconServer:
                             },
                             "sortType": {
                                 "type": "string",
-                                "description": "Sort type: updated_at (default), recommend",
-                                "default": "updated_at",
+                                "description": "Sort type: recommend (default), updated_at",
+                                "default": "recommend",
                             },
                             "page": {
                                 "type": "integer",
@@ -198,7 +198,7 @@ class MCPIconServer:
         if name == "search_icons":
             result = await self.searcher.search_icons(
                 q=args.get("q", ""),
-                sort_type=args.get("sortType", "updated_at"),
+                sort_type=args.get("sortType", "recommend"),
                 page=args.get("page", 1),
                 page_size=args.get("pageSize", 100),
             )
