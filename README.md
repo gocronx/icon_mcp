@@ -151,7 +151,3 @@ icon_mcp/
             ├── en.py        # 英文翻译
             └── zh_cn.py     # 中文翻译
 ```
-
-## License
-
-MIT
