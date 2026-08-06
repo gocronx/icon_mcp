@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+__all__ = ["ServerConfig"]
+
 
 @dataclass
 class ServerConfig:
@@ -29,6 +31,15 @@ class ServerConfig:
     # Cache
     cache_expiry_ms: int = field(
         default_factory=lambda: int(os.environ.get("ICON_CACHE_EXPIRY", "1800000"))
+    )
+    cache_max_icon_entries: int = field(
+        default_factory=lambda: int(os.environ.get("ICON_CACHE_MAX_ICONS", "500"))
+    )
+    cache_max_search_entries: int = field(
+        default_factory=lambda: int(os.environ.get("ICON_CACHE_MAX_SEARCHES", "200"))
+    )
+    cache_cleanup_interval_s: float = field(
+        default_factory=lambda: float(os.environ.get("ICON_CACHE_CLEANUP_INTERVAL", "300"))
     )
 
     # Search

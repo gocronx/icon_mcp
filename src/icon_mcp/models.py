@@ -5,11 +5,22 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+__all__ = [
+    "IconData",
+    "SearchResult",
+    "CacheEntry",
+    "SelectionStatus",
+    "SelectionData",
+    "SelectedIcon",
+]
 
 
 class IconData(BaseModel):
     """Represents a single icon from iconfont.cn."""
+
+    model_config = ConfigDict(extra="allow")
 
     id: int
     name: str = ""
@@ -23,9 +34,6 @@ class IconData(BaseModel):
     fills: int | None = None
     category: str | None = None
     user: dict[str, Any] | None = None
-
-    class Config:
-        extra = "allow"
 
 
 class SearchResult(BaseModel):
@@ -63,7 +71,7 @@ class SelectionData(BaseModel):
 
     status: SelectionStatus = SelectionStatus.WAITING
     search_id: str = ""
-    timestamp: float = 0
+    timestamp: float = 0.0
     connected: bool = False
     selected_icons: list[dict[str, Any]] = Field(default_factory=list)
 
