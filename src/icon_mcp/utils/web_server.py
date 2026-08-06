@@ -9,7 +9,7 @@ import random
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 from aiohttp import web
@@ -17,6 +17,24 @@ from aiohttp import web
 from ..lang import t, get_current_language
 from ..models import SelectionData, SelectionStatus
 from .cache import CacheManager
+
+__all__ = ["WebServer", "HtmlGenerator"]
+
+# Constants
+_WS_DISCONNECT_GRACE_PERIOD = 2.0  # seconds before marking selection as failed
+_PORT_SCAN_RANGE = 100  # number of ports to try from start_port
+_FALLBACK_PORT_MIN = 20000
+_FALLBACK_PORT_MAX = 30000
+_DEFAULT_PAGE_SIZE = 15
+
+
+class HtmlGenerator(Protocol):
+    """Protocol for the HTML/JS generator used by the web server."""
+
+    port: int
+
+    def generate_html(self, search_id: str = "") -> str: ...
+    def generate_js(self) -> str: ...
 
 
 class WebServer:
@@ -35,9 +53,9 @@ class WebServer:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self._ws_clients: set[web.WebSocketResponse] = set()
-        self._html_generator: Any = None  # Will be set externally
+        self._html_generator: HtmlGenerator | None = None
 
-    def set_html_generator(self, generator: Any) -> None:
+    def set_html_generator(self, generator: HtmlGenerator) -> None:
         """Set the HTML generator for serving the web UI."""
         self._html_generator = generator
 
@@ -136,7 +154,7 @@ class WebServer:
         """Handle cache API - return cached search results."""
         search_id = request.query.get("searchId", "")
         page = int(request.query.get("page", "1"))
-        page_size = int(request.query.get("pageSize", "15"))
+        page_size = int(request.query.get("pageSize", str(_DEFAULT_PAGE_SIZE)))
 
         cached = self.cache.get_search(search_id)
         if cached is None:
@@ -257,7 +275,7 @@ class WebServer:
             if search_id:
                 selection = self.cache.get_selection(search_id)
                 if selection and selection.status == SelectionStatus.WAITING:
-                    await asyncio.sleep(2)  # Grace period
+                    await asyncio.sleep(_WS_DISCONNECT_GRACE_PERIOD)
                     selection = self.cache.get_selection(search_id)
                     if selection and selection.status == SelectionStatus.WAITING:
                         self.cache.set_selection(
@@ -287,7 +305,7 @@ class WebServer:
     async def _find_available_port(self, start_port: int) -> int:
         """Find an available port starting from start_port."""
         port = start_port
-        max_port = start_port + 100
+        max_port = start_port + _PORT_SCAN_RANGE
 
         while port < max_port:
             try:
@@ -301,7 +319,7 @@ class WebServer:
                 port += 1
 
         # Fallback to random port
-        return random.randint(20000, 30000)
+        return random.randint(_FALLBACK_PORT_MIN, _FALLBACK_PORT_MAX)
 
     @staticmethod
     def _open_browser(url: str) -> None:

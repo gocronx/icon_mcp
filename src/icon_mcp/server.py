@@ -1,22 +1,16 @@
-"""MCP Server core - registers tools and handles MCP protocol."""
+"""MCP Server core - uses MCPServer (v2 high-level API) with lifespan."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import signal
 import sys
-import time
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import (
-    TextContent,
-    Tool,
-    CallToolResult,
-)
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
+from mcp.types import ToolAnnotations
 
 from .config import ServerConfig
 from .lang import t, init_from_env
@@ -27,347 +21,324 @@ from .utils.saver import IconSaver
 from .utils.web_server import WebServer
 from .web.interface import WebInterface
 
+__all__ = ["mcp", "set_server_config", "AppState"]
 
-class MCPIconServer:
-    """Main MCP Icon Server - orchestrates all components."""
 
-    def __init__(self, config: ServerConfig | None = None):
-        self.config = config or ServerConfig()
+@dataclass
+class AppState:
+    """Shared application state created during lifespan."""
 
-        # Initialize language
-        init_from_env()
+    config: ServerConfig
+    cache: CacheManager
+    searcher: IconSearcher
+    saver: IconSaver
+    web_server: WebServer
+    web_interface: WebInterface
 
-        # Initialize components
-        self.cache = CacheManager(expiry_seconds=self.config.cache_expiry_seconds)
-        self.searcher = IconSearcher(self.config, self.cache)
-        self.saver = IconSaver(self.cache)
-        self.web_server = WebServer(
-            cache=self.cache,
-            port=self.config.web_server_port,
-            auto_open=self.config.web_server_auto_open,
-        )
-        self.web_interface = WebInterface(port=self.config.web_server_port)
-        self.web_server.set_html_generator(self.web_interface)
 
-        # MCP server instance
-        self.mcp = Server("icon-mcp-server")
-        self._register_handlers()
+@asynccontextmanager
+async def app_lifespan(server: MCPServer):
+    """Application lifespan: initialize and clean up resources."""
+    config = _get_config()
+    init_from_env()
 
-    def _register_handlers(self) -> None:
-        """Register all MCP tool handlers."""
+    # Initialize components
+    cache = CacheManager(
+        expiry_seconds=config.cache_expiry_seconds,
+        max_icon_entries=config.cache_max_icon_entries,
+        max_search_entries=config.cache_max_search_entries,
+        cleanup_interval=config.cache_cleanup_interval_s,
+    )
+    searcher = IconSearcher(config, cache)
+    saver = IconSaver(cache)
+    web_server = WebServer(
+        cache=cache,
+        port=config.web_server_port,
+        auto_open=config.web_server_auto_open,
+    )
+    web_interface = WebInterface(port=config.web_server_port)
+    web_server.set_html_generator(web_interface)
 
-        @self.mcp.list_tools()
-        async def list_tools() -> list[Tool]:
-            return [
-                Tool(
-                    name="search_icons",
-                    description=t("search.searchDescription"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "q": {
-                                "type": "string",
-                                "description": "Search keyword for icons",
-                            },
-                            "sortType": {
-                                "type": "string",
-                                "description": "Sort type: recommend (default), updated_at",
-                                "default": "recommend",
-                            },
-                            "page": {
-                                "type": "integer",
-                                "description": "Page number (default: 1)",
-                                "default": 1,
-                                "minimum": 1,
-                            },
-                            "pageSize": {
-                                "type": "integer",
-                                "description": "Number of results per page (1-100, default: 100)",
-                                "default": 100,
-                                "minimum": 1,
-                                "maximum": 100,
-                            },
-                        },
-                        "required": ["q"],
-                    },
-                ),
-                Tool(
-                    name="start_web_server",
-                    description=t("web.startServer"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "port": {
-                                "type": "integer",
-                                "description": "Server port (default: 3000)",
-                            },
-                            "autoOpen": {
-                                "type": "boolean",
-                                "description": "Auto-open browser (default: true)",
-                                "default": True,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="stop_web_server",
-                    description=t("web.stopServer"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="check_selection_status",
-                    description=t("web.checkSelection"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "searchId": {
-                                "type": "string",
-                                "description": "Search ID to check selection for",
-                            },
-                            "maxWaitTime": {
-                                "type": "integer",
-                                "description": "Max wait time in ms (default: 180000)",
-                                "default": 180000,
-                            },
-                        },
-                        "required": ["searchId"],
-                    },
-                ),
-                Tool(
-                    name="get_cache_stats",
-                    description=t("cache.statsDescription"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="clear_cache",
-                    description=t("cache.clearDescription"),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "expiredOnly": {
-                                "type": "boolean",
-                                "description": "Only clear expired entries (default: false)",
-                                "default": False,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="save_icons",
-                    description="Save selected icons to local filesystem as SVG files",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "icons": {
-                                "type": "array",
-                                "description": "Array of icon objects to save",
-                                "items": {"type": "object"},
-                            },
-                            "savePath": {
-                                "type": "string",
-                                "description": "Path to save icons (default: ./saved-icons)",
-                                "default": "./saved-icons",
-                            },
-                        },
-                        "required": ["icons"],
-                    },
-                ),
-            ]
+    state = AppState(
+        config=config,
+        cache=cache,
+        searcher=searcher,
+        saver=saver,
+        web_server=web_server,
+        web_interface=web_interface,
+    )
 
-        @self.mcp.call_tool()
-        async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-            try:
-                result = await self._dispatch_tool(name, arguments)
-                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
-            except Exception as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=json.dumps({"error": str(e)}, ensure_ascii=False),
-                    )
-                ]
+    # Start periodic cache cleanup
+    cache.start_cleanup_task()
 
-    async def _dispatch_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch a tool call to the appropriate handler."""
-        if name == "search_icons":
-            result = await self.searcher.search_icons(
-                q=args.get("q", ""),
-                sort_type=args.get("sortType", "recommend"),
-                page=args.get("page", 1),
-                page_size=args.get("pageSize", 100),
-            )
-            # Auto-start web server if not running
-            if not self.web_server.is_running():
-                await self.web_server.start(auto_open=False)
-                self.web_interface.port = self.web_server.port
-                print(f"  Web server auto-started: {self.web_server.get_url()}", file=sys.stderr)
+    # Log startup info
+    print(t("server.starting"), file=sys.stderr)
+    print(f"  MCP transport : stdio", file=sys.stderr)
+    print(f"  Web server port: {config.web_server_port}", file=sys.stderr)
+    print(f"  Language       : {config.language}", file=sys.stderr)
+    print(f"  Auto start web : {config.auto_start_web_server}", file=sys.stderr)
+    print(f"  Auto open browser: {config.web_server_auto_open}", file=sys.stderr)
 
-            # Add web URL to result
-            search_id = result["search_id"]
-            result["web_url"] = f"{self.web_server.get_url()}?searchId={search_id}"
-            result["waiting_message"] = t("search.pleaseWaitForSelection")
-            return result
+    # Auto-start web server if configured
+    if config.auto_start_web_server:
+        await web_server.start(auto_open=config.web_server_auto_open)
+        web_interface.port = web_server.port
+        print(f"  Web server URL : {web_server.get_url()}", file=sys.stderr)
 
-        elif name == "start_web_server":
-            result = await self.web_server.start(
-                port=args.get("port"),
-                auto_open=args.get("autoOpen", True),
-            )
-            self.web_interface.port = self.web_server.port
-            return result
+    print(t("server.started"), file=sys.stderr)
 
-        elif name == "stop_web_server":
-            return await self.web_server.stop()
+    try:
+        yield state
+    finally:
+        # Cleanup
+        cache.stop_cleanup_task()
+        await searcher.close()
+        if web_server.is_running():
+            await web_server.stop()
+        print(t("server.shutdown"), file=sys.stderr)
 
-        elif name == "check_selection_status":
-            return await self._check_selection(
-                search_id=args["searchId"],
-                max_wait_ms=args.get("maxWaitTime", 180000),
-            )
 
-        elif name == "get_cache_stats":
-            return self.cache.get_stats()
+# --- Config singleton for lifespan ---
 
-        elif name == "clear_cache":
-            expired_only = args.get("expiredOnly", False)
-            result = self.cache.clear(expired_only=expired_only)
-            result["message"] = (
-                t("cache.expiredCleared") if expired_only else t("cache.cleared")
-            )
-            return result
+_server_config: ServerConfig | None = None
 
-        elif name == "save_icons":
-            return await self.saver.save_icons(
-                icons=args.get("icons", []),
-                save_path=args.get("savePath", "./saved-icons"),
-            )
 
-        else:
-            raise ValueError(t("error.methodNotFound", {"method": name}))
+def set_server_config(config: ServerConfig) -> None:
+    """Set the server config before creating the MCPServer."""
+    global _server_config
+    _server_config = config
 
-    async def _check_selection(
-        self, search_id: str, max_wait_ms: int = 180000
-    ) -> dict[str, Any]:
-        """Poll for user selection status with timeout."""
-        # Validate search_id exists
-        cached = self.cache.get_search(search_id)
-        if cached is None:
-            raise ValueError(t("selection.noSearchFound", {"searchId": search_id}))
 
+def _get_config() -> ServerConfig:
+    """Get the server config (set by run.py or defaults)."""
+    return _server_config or ServerConfig()
+
+
+# --- Create the MCPServer instance ---
+
+mcp = MCPServer("icon-mcp-server", lifespan=app_lifespan)
+
+
+# --- Helper to get state from context ---
+
+
+def _state(ctx: Context) -> AppState:
+    """Extract AppState from context's lifespan_context."""
+    return ctx.request_context.lifespan_context
+
+
+# --- Tool definitions ---
+#
+# NOTE: Tool parameters use camelCase (e.g. sortType, pageSize, searchId) intentionally.
+# MCP tool schemas are exposed directly to AI models via JSON Schema; camelCase matches
+# the iconfont.cn API conventions and common JSON naming, making the schema more natural
+# for LLM consumption. The internal Python code receiving these values converts to
+# snake_case when passing to business logic (e.g. sort_type, page_size).
+#
+
+
+@mcp.tool(
+    name="search_icons",
+    description="Search icons from iconfont.cn",
+    annotations=ToolAnnotations(read_only_hint=True),
+)
+async def search_icons(
+    ctx: Context,
+    q: str,
+    sortType: str = "recommend",
+    page: int = 1,
+    pageSize: int = 100,
+) -> dict[str, Any]:
+    """Search icons from iconfont.cn.
+
+    Args:
+        q: Search keyword for icons
+        sortType: Sort type - recommend (default) or updated_at
+        page: Page number (default: 1)
+        pageSize: Number of results per page (1-100, default: 100)
+    """
+    state = _state(ctx)
+
+    result = await state.searcher.search_icons(
+        q=q,
+        sort_type=sortType,
+        page=page,
+        page_size=pageSize,
+    )
+
+    # Auto-start web server if not running
+    if not state.web_server.is_running():
+        await state.web_server.start(auto_open=False)
+        state.web_interface.port = state.web_server.port
         print(
-            t("selection.checkingStatus", {"searchId": search_id}),
+            f"  Web server auto-started: {state.web_server.get_url()}",
             file=sys.stderr,
         )
 
-        max_wait_s = max_wait_ms / 1000.0
-        start = time.time()
-        check_interval = 0.1  # 100ms polling
-        log_interval = 10.0
-        last_log = start
+    # Add web URL to result
+    search_id = result["search_id"]
+    result["web_url"] = f"{state.web_server.get_url()}?searchId={search_id}"
+    result["waiting_message"] = t("search.pleaseWaitForSelection")
+    return result
 
-        while time.time() - start < max_wait_s:
-            selection = self.cache.get_selection(search_id)
 
-            if selection is not None:
-                if selection.status == SelectionStatus.COMPLETED:
-                    # Clean up and return icons
-                    icons = selection.selected_icons
-                    self.cache.delete_selection(search_id)
-                    return {
-                        "success": True,
-                        "status": "completed",
-                        "selected_icons": icons,
-                        "count": len(icons),
-                    }
-                elif selection.status == SelectionStatus.FAILED:
-                    self.cache.delete_selection(search_id)
-                    return {
-                        "success": False,
-                        "status": "failed",
-                        "message": t("selection.selectionFailed"),
-                    }
+@mcp.tool(
+    name="start_web_server",
+    description="Start web server for icon selection",
+    annotations=ToolAnnotations(read_only_hint=False, idempotent_hint=True),
+)
+async def start_web_server(
+    ctx: Context,
+    port: int | None = None,
+    autoOpen: bool = True,
+) -> dict[str, Any]:
+    """Start the web icon selection interface.
 
-            # Periodic status log
-            now = time.time()
-            if now - last_log >= log_interval:
-                elapsed = int(now - start)
-                print(
-                    t("selection.waitingForSelection") + f" ({elapsed}s)",
-                    file=sys.stderr,
-                )
-                last_log = now
+    Args:
+        port: Server port (default: 3000)
+        autoOpen: Auto-open browser (default: true)
+    """
+    state = _state(ctx)
+    result = await state.web_server.start(port=port, auto_open=autoOpen)
+    state.web_interface.port = state.web_server.port
+    return result
 
-            await asyncio.sleep(check_interval)
 
-        # Timeout
-        elapsed = int(time.time() - start)
+@mcp.tool(
+    name="stop_web_server",
+    description="Stop web server",
+    annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=True),
+)
+async def stop_web_server(ctx: Context) -> dict[str, str]:
+    """Stop the web icon selection server."""
+    state = _state(ctx)
+    return await state.web_server.stop()
+
+
+@mcp.tool(
+    name="check_selection_status",
+    description="Check user selection status",
+    annotations=ToolAnnotations(read_only_hint=True),
+)
+async def check_selection_status(
+    ctx: Context,
+    searchId: str,
+    maxWaitTime: int = 180000,
+) -> dict[str, Any]:
+    """Wait for user to select icons in the web UI.
+
+    Args:
+        searchId: Search ID to check selection for
+        maxWaitTime: Max wait time in ms (default: 180000)
+    """
+    state = _state(ctx)
+
+    # Validate search_id exists
+    cached = state.cache.get_search(searchId)
+    if cached is None:
+        raise ValueError(t("selection.noSearchFound", {"searchId": searchId}))
+
+    print(
+        t("selection.checkingStatus", {"searchId": searchId}),
+        file=sys.stderr,
+    )
+
+    max_wait_s = maxWaitTime / 1000.0
+    event = state.cache.get_selection_event(searchId)
+
+    # Check if a terminal state was already set before we started waiting
+    selection = state.cache.get_selection(searchId)
+    if selection is None or selection.status == SelectionStatus.WAITING:
+        # Block until the event fires or timeout — zero CPU spin
+        try:
+            await asyncio.wait_for(event.wait(), timeout=max_wait_s)
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "status": "timeout",
+                "message": t(
+                    "selection.selectionTimeout", {"seconds": int(max_wait_s)}
+                ),
+            }
+        # Re-read after waking up
+        selection = state.cache.get_selection(searchId)
+
+    if selection is None:
         return {
             "success": False,
             "status": "timeout",
-            "message": t("selection.selectionTimeout", {"seconds": elapsed}),
+            "message": t("selection.selectionTimeout", {"seconds": int(max_wait_s)}),
         }
 
-    async def _cleanup(self) -> None:
-        """Clean up all resources."""
-        await self.searcher.close()
-        if self.web_server.is_running():
-            await self.web_server.stop()
+    if selection.status == SelectionStatus.COMPLETED:
+        icons = selection.selected_icons
+        state.cache.delete_selection(searchId)
+        return {
+            "success": True,
+            "status": "completed",
+            "selected_icons": icons,
+            "count": len(icons),
+        }
+    elif selection.status == SelectionStatus.FAILED:
+        state.cache.delete_selection(searchId)
+        return {
+            "success": False,
+            "status": "failed",
+            "message": t("selection.selectionFailed"),
+        }
+    else:
+        return {
+            "success": False,
+            "status": "timeout",
+            "message": t("selection.selectionTimeout", {"seconds": int(max_wait_s)}),
+        }
 
-    async def run(self) -> None:
-        """Run the MCP server on stdio."""
-        print(t("server.starting"), file=sys.stderr)
-        print(f"  MCP transport : stdio", file=sys.stderr)
-        print(f"  Web server port: {self.config.web_server_port}", file=sys.stderr)
-        print(f"  Language       : {self.config.language}", file=sys.stderr)
-        print(f"  Auto start web : {self.config.auto_start_web_server}", file=sys.stderr)
-        print(f"  Auto open browser: {self.config.web_server_auto_open}", file=sys.stderr)
 
-        # Auto-start web server if configured
-        if self.config.auto_start_web_server:
-            await self.web_server.start(auto_open=self.config.web_server_auto_open)
-            self.web_interface.port = self.web_server.port
-            print(f"  Web server URL : {self.web_server.get_url()}", file=sys.stderr)
+@mcp.tool(
+    name="get_cache_stats",
+    description="Get icon cache statistics",
+    annotations=ToolAnnotations(read_only_hint=True),
+)
+async def get_cache_stats(ctx: Context) -> dict[str, Any]:
+    """Get cache statistics including valid/expired/total counts."""
+    state = _state(ctx)
+    return state.cache.get_stats()
 
-        print(t("server.started"), file=sys.stderr)
 
-        # Register signal handlers on the running event loop.
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(
-                sig, lambda: asyncio.ensure_future(self._shutdown_and_exit())
-            )
+@mcp.tool(
+    name="clear_cache",
+    description="Clear icon cache",
+    annotations=ToolAnnotations(destructive_hint=True),
+)
+async def clear_cache(ctx: Context, expiredOnly: bool = False) -> dict[str, Any]:
+    """Clear cache entries.
 
-        try:
-            async with stdio_server() as (read_stream, write_stream):
-                await self.mcp.run(
-                    read_stream,
-                    write_stream,
-                    self.mcp.create_initialization_options(),
-                )
-        except asyncio.CancelledError:
-            pass
-        finally:
-            await self._cleanup()
+    Args:
+        expiredOnly: Only clear expired entries (default: false)
+    """
+    state = _state(ctx)
+    result = state.cache.clear(expired_only=expiredOnly)
+    result["message"] = (
+        t("cache.expiredCleared") if expiredOnly else t("cache.cleared")
+    )
+    return result
 
-    async def _shutdown_and_exit(self) -> None:
-        """Clean up resources then terminate the process.
 
-        The MCP SDK's stdio_server reads stdin in a blocking thread that
-        cannot be interrupted by task cancellation or fd closing on macOS.
-        After cleaning up, we reset the signal handler to default and
-        re-raise SIGINT so the process is terminated normally by the OS.
-        This allows the parent process (e.g. uv) to reap the child
-        cleanly without ESRCH errors.
-        """
-        print(t("server.shutdown"), file=sys.stderr)
-        await self._cleanup()
-        # Reset to default handler and re-raise — the OS terminates
-        # the process, and the parent can waitpid() without ESRCH.
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGINT)
+@mcp.tool(
+    name="save_icons",
+    description="Save selected icons to local filesystem as SVG files",
+    annotations=ToolAnnotations(read_only_hint=False),
+)
+async def save_icons(
+    ctx: Context,
+    icons: list[dict[str, Any]],
+    savePath: str = "./saved-icons",
+) -> dict[str, Any]:
+    """Save icon SVG data to local files.
+
+    Args:
+        icons: Array of icon objects to save (each with name and svg/show_svg)
+        savePath: Path to save icons (default: ./saved-icons)
+    """
+    state = _state(ctx)
+    return await state.saver.save_icons(icons=icons, save_path=savePath)

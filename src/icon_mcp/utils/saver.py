@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
@@ -11,6 +10,8 @@ from typing import Any
 from ..lang import t
 from ..models import SelectionData, SelectionStatus
 from .cache import CacheManager
+
+__all__ = ["IconSaver"]
 
 
 class IconSaver:

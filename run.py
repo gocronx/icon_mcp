@@ -8,7 +8,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 import sys
 
@@ -17,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from icon_mcp.config import ServerConfig
-from icon_mcp.server import MCPIconServer
+from icon_mcp.server import mcp, set_server_config
 
 
 def main() -> None:
@@ -63,10 +62,12 @@ def main() -> None:
         config.language = args.language
         os.environ["LANGUAGE"] = args.language
 
-    # Create and run server
-    server = MCPIconServer(config)
+    # Set config before server starts (lifespan will read it)
+    set_server_config(config)
+
+    # Run with stdio transport
     try:
-        asyncio.run(server.run())
+        mcp.run(transport="stdio")
     except (KeyboardInterrupt, SystemExit):
         pass
     except Exception as e:

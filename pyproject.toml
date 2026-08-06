@@ -11,11 +11,20 @@ authors = [
 keywords = ["mcp", "icon", "server", "iconfont", "svg", "model-context-protocol"]
 
 dependencies = [
-    "mcp>=1.0.0",
-    "httpx>=0.27.0",
-    "aiohttp>=3.9.0",
-    "pydantic>=2.0.0",
+    "mcp~=2.0.0",
+    "httpx~=0.28.1",
+    "aiohttp~=3.14.3",
+    "pydantic~=2.13.4",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest~=8.3.0",
+    "pytest-asyncio~=1.0.0",
+]
+
+[project.scripts]
+icon-mcp = "icon_mcp.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

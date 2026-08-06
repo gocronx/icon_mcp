@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="{{lang}}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{title}}</title>
+    <style>{{css}}</style>
+</head>
+<body>
+    <div class="header">
+        <h1>{{title}}</h1>
+        <p>{{subtitle}}</p>
+        <div class="search-bar">
+            <input type="text" id="filterInput" placeholder="{{search_placeholder}}"
+                   oninput="filterIcons(this.value)">
+        </div>
+    </div>
+    <div class="main">
+        <div class="icon-area">
+            <div id="message" class="message"></div>
+            <div id="loading" class="loading" style="display:none;">
+                <div class="spinner"></div>
+                <div>{{loading}}</div>
+            </div>
+            <div id="iconGrid" class="icon-grid"></div>
+            <div id="pagination" class="pagination" style="display:none;">
+                <button id="prevBtn" onclick="goToPage(currentPage-1)">{{prev_text}}</button>
+                <span id="pageNumbers"></span>
+                <button id="nextBtn" onclick="goToPage(currentPage+1)">{{next_text}}</button>
+            </div>
+        </div>
+        <div class="sidebar">
+            <div class="sidebar-box">
+                <h3 id="selectedTitle">{{no_selected}}</h3>
+                <div id="selectedList" class="selected-list"></div>
+                <button class="send-btn" id="sendBtn" onclick="sendSelectedIcons()" disabled>
+                    {{send_btn}}
+                </button>
+            </div>
+        </div>
+    </div>
+    <script>
+        const SEARCH_ID = '{{search_id}}';
+        const WS_PORT = {{ws_port}};
+    </script>
+    <script src="/site.js"></script>
+</body>
+</html>
